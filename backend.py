@@ -1,173 +1,9 @@
-# from fastapi import FastAPI, UploadFile
-# from pydantic import BaseModel
-# from typing import List
-# from fastapi.responses import JSONResponse
-# from loguru import logger
-# from tenacity import retry, wait_fixed, stop_after_attempt
-# from pydub import AudioSegment
-# from openrouter import OpenRouterClient
-# from sqlalchemy import create_engine, Column, INTEGER, String, JSON
-# from sqlalchemy.ext.declarative import declarative_base
-# from sqlalchemy.orm import sessionmaker
-# from langchain_core import Graph, Node , run_graph_async
-# import requests
-# import os
-# import json 
-# from dotenv import load_dotenv
-# load_dotenv()
-
-# app = FastAPI()
-
-# class CallAnalysis(BaseModel):
-#     overall_sentiment: str
-#     compliance_flags: List[str]
-#     crm_summary: str
-
-
-# ## Postgre SQL SETUP
-
-# DATABASE_URL = "postgresql+psycopg2://username:password@localhost:5432/callcenterdb"
-# engine = create_engine(DATABASE_URL)
-# SessionLocal = sessionmaker(bind=engine)
-# Base = declarative_base()
-
-# class CallLog(Base):
-#     __tablename__ = "call_logs"
-#     id = Column(INTEGER, primary_key=True, index=True)
-#     transcript = Column(String)
-#     analysis = Column(JSON)
-
-
-# Base.metadata.create_all(bind=engine)
-
-# ## OpenRouter LLM Client
-# OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-# llm_client = OpenRouterClient(api_key= OPENROUTER_API_KEY)
-
-# ## ASR Node with Retry
-
-# COLAB_ASR_URL = "https://<colab-ngrok>/transcribe"
-
-# @retry(wait=wait_fixed(2), stop=stop_after_attempt(3))
-# def call_asr(audio_byte: bytes) -> str:
-#     resp = requests.post(
-#         COLAB_ASR_URL,
-#         files={"file": ("audio.wav", audio_byte, "audio/wav")}
-#     )
-#     resp.raise_for_status()
-#     return resp.json().get("transcript", "")
-
-# async def asr_node(audio_bytes):
-#     # Run blocking ASR in a separate thread
-#     transcript = await anyio.to_thread.run_sync(call_asr, audio_bytes)
-#     return transcript
-
-
-# ## Preprocess Node
-
-# def preprocess_transcript(transcript: str) -> str:
-#     cleaned = transcript.strip()
-#     return cleaned
-
-
-# ## LLM NODE with retry
-
-# @retry(wait=wait_fixed(2), stop= stop_after_attempt(3))
-# @retry(wait=wait_fixed(2), stop=stop_after_attempt(3))
-# def call_llm(cleaned_text: str) -> dict:
-#     prompt = f"""
-#     You are a professional call center quality analyst.
-
-#     Analyze the transcript below and return ONLY valid JSON in this exact format:
-
-#     {{
-#     "overall_sentiment": "",
-#     "compliance_flags": [],
-#     "crm_summary": ""
-#     }}
-
-#     Definitions:
-#     - overall_sentiment: Positive, Neutral, or Negative
-#     - compliance_flags: List any policy violations or risky language. Empty list if none.
-#     - crm_summary: Short professional summary suitable for CRM entry.
-
-#     Transcript:
-#     {cleaned_text}
-
-#     Do not include explanations.
-#     Do not include markdown.
-#     Return raw JSON only.
-#     """
-#     response = llm_client.completion.create(
-#         model="falcon-7b:free",
-#         input=prompt,
-#         max_output_tokens=500
-#     )
-#     raw_output = response.get("completion", "")
-#     try:
-#         parsed = json.loads(raw_output)
-#         validated = CallAnalysis(**parsed)
-#         return validated.dict()
-#     except Exception as e:
-#         logger.error(f"Invalid LLM JSON: {e}")
-#         return {
-#             "overall_sentiment": "Unknown",
-#             "compliance_flags": [],
-#             "crm_summary": "LLM output invalid."
-#         }
-    
-# # LangGrpaph Nodes
-
-# async def asr_node(audio_bytes):
-#     transcript = call_asr(audio_bytes)
-#     return transcript
-
-# async def preprocess_node(transcript):
-#     return preprocess_transcript(transcript)
-
-# async def llm_node(cleaned_text):
-#     return call_llm(cleaned_text)
-
-# async def output_node(cleaned_text, analysis):
-#     # Saving to postgre SQL     
-#     session = SessionLocal()
-#     call_log = CallLog(transcript = cleaned_text, analysis = analysis)
-#     session.add(call_log)
-#     session.commit()
-#     session.close()
-#     return {"transcript": cleaned_text, "analysis": analysis}
-
-
-# # REST Route Using LangGraph 
-
-# @app.post("/process_audio")
-# async def process_audio(file : UploadFile):
-#     audio_bytes = await file.read()
-
-
-#     # Building Graph
-#     graph = Graph()
-#     node_asr = Node("ASR", asr_node, input_keys = ["audio_bytes"])
-#     node_pre = Node("Preprocess", preprocess_node, input_keys = ["transcript"])
-#     node_llm =Node("LLM", llm_node, input_keys = ["cleaned_text"])
-#     node_out = Node("Output", output_node, input_keys = ["cleaned_text", "analysis"])
-
-#     # Connecting Nodes
-#     graph.connect(node_asr, node_pre, output_map={"transcript": "transcript"})
-#     graph.connect(node_pre, node_llm, output_map={"cleaned_text": "cleaned_text"})
-#     graph.connect(node_pre, node_out, output_map={"cleaned_text": "cleaned_text"})
-#     graph.connect(node_llm, node_out, output_map={"analysis": "analysis"})
-
-#     result = await run_graph_async(graph, inputs={"audio_bytes": audio_bytes})
-#     return JSONResponse(content=result)
-
-
 from fastapi import FastAPI, UploadFile
 from pydantic import BaseModel
 from typing import List, TypedDict, Dict
 from fastapi.responses import JSONResponse
 from loguru import logger
-from tenacity import retry, wait_fixed, stop_after_attempt
+from tenacity import retry, wait_fixed, stop_after_attempt, stop_after_attempt, wait_fixed, RetryError
 from openrouter import OpenRouter
 from sqlalchemy import create_engine, Column, INTEGER, String, JSON
 from sqlalchemy.ext.declarative import declarative_base
@@ -210,91 +46,152 @@ Base.metadata.create_all(bind=engine)
 # --------------------
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 llm_client = OpenRouter(api_key=OPENROUTER_API_KEY)
-
-# --------------------
-# ASR Node (blocking → run async)
-# --------------------
-COLAB_ASR_URL = "https://<colab-ngrok>/transcribe"
-
-@retry(wait=wait_fixed(2), stop=stop_after_attempt(3))
-def call_asr(audio_bytes: bytes) -> str:
-    """Send audio bytes to Colab ASR endpoint."""
-    resp = requests.post(
-        COLAB_ASR_URL,
-        files={"file": ("audio.wav", audio_bytes, "audio/wav")}
-    )
-    resp.raise_for_status()
-    return resp.json().get("transcript", "")
-
-# async def asr_original(audio_bytes, format="wav"):
-#     """Chunk audio and transcribe each chunk asynchronously."""
-#     audio = AudioSegment.from_file(io.BytesIO(audio_bytes), format=format)
-#     chunk_ms = 60000  # 60 sec chunks
-#     full_transcript = ""
-
-#     for i in range(0, len(audio), chunk_ms):
-#         chunk = audio[i:i+chunk_ms]
-#         chunk_buffer = io.BytesIO()
-#         chunk.export(chunk_buffer, format="wav")  # always export to WAV for ASR
-#         chunk_bytes = chunk_buffer.getvalue()
-#         chunk_transcript = await anyio.to_thread.run_sync(call_asr, chunk_bytes)
-#         full_transcript += chunk_transcript + " "
-
-#     return full_transcript.strip()
-import tempfile
-import subprocess
 import os
+import io
 import uuid
+import subprocess
+import tempfile
+import anyio
+import requests
+from tenacity import retry, wait_fixed, stop_after_attempt
 
-async def asr_original(audio_bytes, format="wav"):
-    """
-    Chunk audio using FFmpeg and transcribe each chunk.
-    Python 3.13 safe (no pydub, no audioop).
-    """
+# --------------------
+# DYNAMIC NGROK URL
+# --------------------
+# Make sure your Colab session runs this and prints the URL
+# Example in Colab:
+#   from pyngrok import ngrok
+#   ngrok.set_auth_token("YOUR_NGROK_AUTH_TOKEN")
+#   public_url = ngrok.connect(8000)
+#   print("Current Colab ASR URL:", public_url.public_url)
 
-    full_transcript = ""
+COLAB_ASR_URL = os.getenv("COLAB_ASR_URL", "http://ixiax-34-124-217-75.a.free.pinggy.link/transcribe")
+
+# --------------------
+# CALL ASR WITH RETRIES
+# --------------------
+@retry(wait=wait_fixed(2), stop=stop_after_attempt(5))
+def call_asr(audio_bytes: bytes) -> str:
+    try:
+        resp = requests.post(
+            COLAB_ASR_URL,
+            files={"file": ("chunk.wav", audio_bytes, "audio/wav")},
+            timeout=120
+        )
+        resp.raise_for_status()
+
+        data = resp.json()
+
+        # ---- HARD SAFETY EXTRACTION ----
+        if isinstance(data, dict):
+            text = data.get("transcript") or data.get("text") or ""
+        elif isinstance(data, str):
+            text = data
+        else:
+            text = ""
+
+        if not isinstance(text, str):
+            text = str(text)
+
+        return text
+
+    except requests.exceptions.RequestException as e:
+        print(f"[ERROR] ASR call failed: {e}")
+        raise
+
+
+# --------------------------------------------------
+# EXTRA SAFE WRAPPER (RETRY INSIDE THREAD)
+# --------------------------------------------------
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
+def call_asr_safe(chunk_bytes: bytes) -> str:
+    return call_asr(chunk_bytes)
+
+
+# --------------------------------------------------
+# ASR ORIGINAL (CHUNKING + SAFE STRING HANDLING)
+# --------------------------------------------------
+import logging
+
+logger = logging.getLogger(__name__)
+
+async def asr_original(audio_bytes: bytes, format: str = "wav") -> str:
+    full_transcript_parts = []
     unique_id = str(uuid.uuid4())
 
     with tempfile.TemporaryDirectory() as tmpdir:
         input_path = os.path.join(tmpdir, f"input.{format}")
-        
-        # 1️⃣ Save uploaded audio to temp file
+
+        # Save uploaded audio
         with open(input_path, "wb") as f:
             f.write(audio_bytes)
 
-        # 2️⃣ Chunk using FFmpeg (60 sec per chunk)
         output_pattern = os.path.join(tmpdir, f"{unique_id}_%03d.wav")
 
-        command = [
+        ffmpeg_cmd = [
             "ffmpeg",
             "-i", input_path,
             "-f", "segment",
-            "-segment_time", "60",
-            "-ar", "16000",        # resample (good for ASR)
-            "-ac", "1",            # mono (good for ASR)
-            "-y",                  # overwrite
+            "-segment_time", "15",
+            "-ar", "16000",
+            "-ac", "1",
+            "-y",
             output_pattern
         ]
 
+        # Run ffmpeg safely
         await anyio.to_thread.run_sync(
-            lambda: subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            lambda: subprocess.run(
+                ffmpeg_cmd,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
         )
 
-        # 3️⃣ Send each chunk to ASR
         chunk_files = sorted(
-            [f for f in os.listdir(tmpdir) if f.startswith(unique_id) and f.endswith(".wav")]
+            f for f in os.listdir(tmpdir)
+            if f.startswith(unique_id) and f.endswith(".wav")
         )
 
         for chunk_file in chunk_files:
             chunk_path = os.path.join(tmpdir, chunk_file)
+
             with open(chunk_path, "rb") as f:
                 chunk_bytes = f.read()
 
-            chunk_transcript = await anyio.to_thread.run_sync(call_asr, chunk_bytes)
-            full_transcript += chunk_transcript + " "
+            try:
+                chunk_transcript = await anyio.to_thread.run_sync(
+                    call_asr_safe,
+                    chunk_bytes
+                )
 
-    return full_transcript.strip()
+                # ---- FINAL STRING SAFETY ----
+                if not isinstance(chunk_transcript, str):
+                    chunk_transcript = str(chunk_transcript)
 
+                cleaned = chunk_transcript.strip()
+
+                if cleaned:
+                    full_transcript_parts.append(cleaned)
+
+            except RetryError:
+                print(f"[WARN] ASR failed for chunk: {chunk_file}")
+                continue
+
+    full_transcript = " ".join(full_transcript_parts)
+    
+    logger.debug("Full ASR transcript (debug mode):")
+    logger.debug(full_transcript)
+    
+    # or if you want it more visible during development:
+    if logging.getLogger().isEnabledFor(logging.DEBUG):
+        print("\n=== DEBUG: FULL TRANSCRIPT ===")
+        print(full_transcript)
+        print("================================\n")
+
+    return full_transcript
 # --------------------
 # Preprocess Node
 # --------------------
@@ -304,84 +201,118 @@ def preprocess_transcript(transcript: str) -> str:
 # --------------------
 # LLM Node (blocking → run async)
 # --------------------
+
+# ---------------------
+# Define your schema
+# ---------------------
+class CallAnalysis(BaseModel):
+    overall_sentiment: str
+    compliance_flags: List[str]
+    crm_summary: str
+
+# ---------------------
+# OpenRouter API config
+# ---------------------
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+HEADERS = {
+    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+    "Content-Type": "application/json"
+}
+
 @retry(wait=wait_fixed(2), stop=stop_after_attempt(3))
 def call_llm(cleaned_text: str) -> dict:
     base_prompt = f"""
-    You are a professional call center quality analyst.
+Analyze the transcript below and return ONLY valid JSON in this exact format:
 
-    Analyze the transcript below and return ONLY valid JSON in this exact format:
+{{
+"overall_sentiment": "",
+"compliance_flags": [],
+"crm_summary": ""
+}}
 
-    {{
-    "overall_sentiment": "",
-    "compliance_flags": [],
-    "crm_summary": ""
-    }}
+Definitions:
+- overall_sentiment: Positive, Neutral, or Negative
+- compliance_flags: List any policy violations or risky language. Empty list if none.
+- crm_summary: Short professional summary suitable for CRM entry.
 
-    Definitions:
-    - overall_sentiment: Positive, Neutral, or Negative
-    - compliance_flags: List any policy violations or risky language. Empty list if none.
-    - crm_summary: Short professional summary suitable for CRM entry.
+Transcript:
+{cleaned_text}
 
-    Transcript:
-    {cleaned_text}
+Do not include explanations or markdown.
+Return raw JSON only.
+"""
 
-    Do not include explanations.
-    Do not include markdown.
-    Return raw JSON only.
-    """
-    response = llm_client.completion.create(
-        model="falcon-7b:free",
-        input=base_prompt,
-        max_output_tokens=500
-    )
-    raw_output = response.get("completion", "")
+    payload = {
+        "model": "mistralai/mixtral-8x7b-instruct",
+        "messages": [
+            {"role": "system", "content": "You are a professional call center quality analyst."},
+            {"role": "user", "content": base_prompt}
+        ],
+        "max_tokens": 500,
+        "temperature": 0.1,
+        "response_format": {"type": "json_object"}
+    }
 
-    # Try parsing
+    # Send request to OpenRouter
+    response = requests.post(OPENROUTER_URL, headers=HEADERS, json=payload, timeout=60)
+    response.raise_for_status()  # Will raise if 4xx/5xx
+
+    data = response.json()
+    raw_output = data["choices"][0]["message"]["content"]
+
+    # Try parsing JSON
     try:
         parsed = json.loads(raw_output)
         validated = CallAnalysis(**parsed)
         return validated.dict()
     except Exception as e:
         logger.warning(f"Initial LLM JSON invalid: {e}")
-        # -----------------------
         # Repair attempt
-        # -----------------------
         repair_prompt = f"""
-    The JSON below is invalid. Please fix it so that it strictly matches this schema:
-    {{
-    "overall_sentiment": "",
-    "compliance_flags": [],
-    "crm_summary": ""
-    }}
-    Return valid JSON only. Do not add any explanations or markdown.
+The JSON below is invalid. Please fix it to strictly match this schema:
+{{
+"overall_sentiment": "",
+"compliance_flags": [],
+"crm_summary": ""
+}}
+Return valid JSON only. Do not add any explanations or markdown.
 
-    Invalid JSON:
-    {raw_output}
-    """
-        repair_response = llm_client.completion.create(
-            model="falcon-7b:free",
-            input=repair_prompt,
-            max_output_tokens=500
-        )
-        repaired_output = repair_response.get("completion", "")
+Invalid JSON:
+{raw_output}
+"""
+        repair_payload = {
+            "model": "mistralai/mixtral-8x7b-instruct",
+            "messages": [
+                {"role": "system", "content": "You are a professional call center quality analyst."},
+                {"role": "user", "content": repair_prompt}
+            ],
+            "max_tokens": 500,
+            "temperature": 0.1,
+            "response_format": {"type": "json_object"}
+        }
+        repair_response = requests.post(OPENROUTER_URL, headers=HEADERS, json=repair_payload, timeout=60)
+        repair_response.raise_for_status()
+        repaired_output = repair_response.json()["choices"][0]["message"]["content"]
+
         try:
             parsed_repair = json.loads(repaired_output)
             validated = CallAnalysis(**parsed_repair)
             return validated.dict()
         except Exception as e2:
             logger.error(f"LLM repair failed: {e2}")
-            # Final fallback
             return {
                 "overall_sentiment": "Unknown",
                 "compliance_flags": [],
                 "crm_summary": "LLM output invalid even after repair."
             }
 
+# Async wrapper
+import anyio
+
 async def llm_original(cleaned_text):
-    # Run blocking LLM in separate thread
     analysis = await anyio.to_thread.run_sync(call_llm, cleaned_text)
     return analysis
-
 # --------------------
 # LangGraph State
 # --------------------
