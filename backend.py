@@ -55,15 +55,6 @@ import anyio
 import requests
 from tenacity import retry, wait_fixed, stop_after_attempt
 
-# --------------------
-# DYNAMIC NGROK URL
-# --------------------
-# Make sure your Colab session runs this and prints the URL
-# Example in Colab:
-#   from pyngrok import ngrok
-#   ngrok.set_auth_token("YOUR_NGROK_AUTH_TOKEN")
-#   public_url = ngrok.connect(8000)
-#   print("Current Colab ASR URL:", public_url.public_url)
 
 COLAB_ASR_URL = os.getenv("COLAB_ASR_URL", "http://ixiax-34-124-217-75.a.free.pinggy.link/transcribe")
 
