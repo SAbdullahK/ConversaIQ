@@ -16,6 +16,14 @@ import anyio
 
 load_dotenv()
 app = FastAPI()
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],  # your Vite dev server
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # --------------------
 # Pydantic schema
