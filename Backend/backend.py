@@ -11,7 +11,15 @@ from sqlalchemy.orm import sessionmaker
 from langgraph.graph import StateGraph, START, END
 import requests, os, json, io
 from dotenv import load_dotenv
+import os
+import io
+import uuid
+import subprocess
+import tempfile
 import anyio
+import requests
+from tenacity import retry, wait_fixed, stop_after_attempt
+
 # from pydub import AudioSegment
 
 load_dotenv()
@@ -54,45 +62,31 @@ Base.metadata.create_all(bind=engine)
 # --------------------
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 llm_client = OpenRouter(api_key=OPENROUTER_API_KEY)
-import os
-import io
-import uuid
-import subprocess
-import tempfile
-import anyio
-import requests
-from tenacity import retry, wait_fixed, stop_after_attempt
 
 
-COLAB_ASR_URL = os.getenv("COLAB_ASR_URL", "http://ixiax-34-124-217-75.a.free.pinggy.link/transcribe")
+COLAB_ASR_URL = "http://dknvu-34-16-183-17.a.free.pinggy.link/transcribe"
+print("ASR URL BEING USED:", COLAB_ASR_URL)
+os.environ["COLAB_ASR_URL"] = COLAB_ASR_URL
 
 # --------------------
 # CALL ASR WITH RETRIES
 # --------------------
+
 @retry(wait=wait_fixed(2), stop=stop_after_attempt(5))
 def call_asr(audio_bytes: bytes) -> str:
     try:
-        resp = requests.post(
-            COLAB_ASR_URL,
-            files={"file": ("chunk.wav", audio_bytes, "audio/wav")},
-            timeout=120
-        )
-        resp.raise_for_status()
+        # create fresh session every call
+        with requests.Session() as session:
+            resp = session.post(
+                COLAB_ASR_URL,
+                files={"file": ("chunk.wav", audio_bytes, "audio/wav")},
+                timeout=120
+            )
+            resp.raise_for_status()
+            data = resp.json()
 
-        data = resp.json()
-
-        # ---- HARD SAFETY EXTRACTION ----
-        if isinstance(data, dict):
-            text = data.get("transcript") or data.get("text") or ""
-        elif isinstance(data, str):
-            text = data
-        else:
-            text = ""
-
-        if not isinstance(text, str):
-            text = str(text)
-
-        return text
+        text = data.get("transcript") or data.get("text") or ""
+        return str(text)
 
     except requests.exceptions.RequestException as e:
         print(f"[ERROR] ASR call failed: {e}")
@@ -378,3 +372,4 @@ async def process_audio(file: UploadFile):
         "analysis": result["analysis"]
     }
     return JSONResponse(content=response_content)
+
